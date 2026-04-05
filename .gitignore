@@ -6,4 +6,7 @@ outputs/checkpoints/
 outputs/samples/
 outputs/metrics/
 outputs/figures/
-outputs/report_figures/
+!outputs/report_figures/
+!outputs/report_figures/*.png
+!outputs/report_figures/*.jpg
+!outputs/report_figures/*.jpeg

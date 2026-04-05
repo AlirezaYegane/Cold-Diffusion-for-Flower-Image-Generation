@@ -1,0 +1,12 @@
+Main quantitative results
+-------------------------
+Dataset: Oxford-102 Flowers validation split
+Primary metric: FID
+
+Main run:
+- FID (100-step / main): 85.049
+
+Reverse-step ablation:
+- 25 steps: 83.005
+- 50 steps: 84.282
+- 100 steps: 85.049
