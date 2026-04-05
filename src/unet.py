@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from src.blocks import ResBlock, Downsample, Upsample
+from src.blocks import AttentionBlock, Downsample, ResBlock, Upsample, make_group_norm
 from src.embeddings import TimeEmbedding
 
 
@@ -14,56 +14,61 @@ class SimpleUNet(nn.Module):
         out_channels: int = 3,
         base_channels: int = 64,
         time_dim: int = 128,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
 
+        c1 = base_channels
+        c2 = base_channels * 2
+        c3 = base_channels * 4
+
         self.time_embedding = TimeEmbedding(time_dim)
+        self.in_conv = nn.Conv2d(in_channels, c1, kernel_size=3, padding=1)
 
-        self.in_conv = nn.Conv2d(in_channels, base_channels, kernel_size=3, padding=1)
+        self.down1 = ResBlock(c1, c1, time_dim, dropout=dropout)
+        self.ds1 = Downsample(c1)
 
-        # Encoder
-        self.down1 = ResBlock(base_channels, base_channels, time_dim)
-        self.ds1 = Downsample(base_channels)
+        self.down2 = ResBlock(c1, c2, time_dim, dropout=dropout)
+        self.attn2 = AttentionBlock(c2)
+        self.ds2 = Downsample(c2)
 
-        self.down2 = ResBlock(base_channels, base_channels * 2, time_dim)
-        self.ds2 = Downsample(base_channels * 2)
+        self.mid1 = ResBlock(c2, c3, time_dim, dropout=dropout)
+        self.mid_attn = AttentionBlock(c3)
+        self.mid2 = ResBlock(c3, c3, time_dim, dropout=dropout)
 
-        # Bottleneck
-        self.mid1 = ResBlock(base_channels * 2, base_channels * 4, time_dim)
-        self.mid2 = ResBlock(base_channels * 4, base_channels * 4, time_dim)
+        self.us1 = Upsample(c3)
+        self.up1 = ResBlock(c3 + c2, c2, time_dim, dropout=dropout)
+        self.up1_attn = AttentionBlock(c2)
 
-        # Decoder
-        self.us1 = Upsample(base_channels * 4)
-        self.up1 = ResBlock(base_channels * 4 + base_channels * 2, base_channels * 2, time_dim)
+        self.us2 = Upsample(c2)
+        self.up2 = ResBlock(c2 + c1, c1, time_dim, dropout=dropout)
 
-        self.us2 = Upsample(base_channels * 2)
-        self.up2 = ResBlock(base_channels * 2 + base_channels, base_channels, time_dim)
-
-        self.out_norm = nn.GroupNorm(num_groups=8, num_channels=base_channels)
+        self.out_norm = make_group_norm(c1)
         self.out_act = nn.SiLU()
-        self.out_conv = nn.Conv2d(base_channels, out_channels, kernel_size=3, padding=1)
+        self.out_conv = nn.Conv2d(c1, out_channels, kernel_size=3, padding=1)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         t_emb = self.time_embedding(t)
-
         x0 = self.in_conv(x)
 
-        h1 = self.down1(x0, t_emb)       # [B, 64, 64, 64]
-        h = self.ds1(h1)                 # [B, 64, 32, 32]
+        h1 = self.down1(x0, t_emb)
+        h = self.ds1(h1)
 
-        h2 = self.down2(h, t_emb)        # [B, 128, 32, 32]
-        h = self.ds2(h2)                 # [B, 128, 16, 16]
+        h2 = self.down2(h, t_emb)
+        h2 = self.attn2(h2)
+        h = self.ds2(h2)
 
-        h = self.mid1(h, t_emb)          # [B, 256, 16, 16]
-        h = self.mid2(h, t_emb)          # [B, 256, 16, 16]
+        h = self.mid1(h, t_emb)
+        h = self.mid_attn(h)
+        h = self.mid2(h, t_emb)
 
-        h = self.us1(h)                  # [B, 256, 32, 32]
-        h = torch.cat([h, h2], dim=1)    # [B, 384, 32, 32]
-        h = self.up1(h, t_emb)           # [B, 128, 32, 32]
+        h = self.us1(h)
+        h = torch.cat([h, h2], dim=1)
+        h = self.up1(h, t_emb)
+        h = self.up1_attn(h)
 
-        h = self.us2(h)                  # [B, 128, 64, 64]
-        h = torch.cat([h, h1], dim=1)    # [B, 192, 64, 64]
-        h = self.up2(h, t_emb)           # [B, 64, 64, 64]
+        h = self.us2(h)
+        h = torch.cat([h, h1], dim=1)
+        h = self.up2(h, t_emb)
 
-        h = self.out_conv(self.out_act(self.out_norm(h)))
-        return h
+        return self.out_conv(self.out_act(self.out_norm(h)))

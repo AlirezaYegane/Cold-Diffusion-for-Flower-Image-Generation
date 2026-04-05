@@ -56,15 +56,17 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--base_channels", type=int, default=64)
     parser.add_argument("--time_dim", type=int, default=128)
+    parser.add_argument("--dropout", type=float, default=0.0)
 
     parser.add_argument("--num_steps", type=int, default=100)
     parser.add_argument("--sigma_min", type=float, default=0.01)
     parser.add_argument("--sigma_max", type=float, default=4.0)
     parser.add_argument("--kernel_size", type=int, default=19)
-    parser.add_argument("--schedule", type=str, default="linear")
+    parser.add_argument("--schedule", type=str, default="linear", choices=["linear", "quadratic"])
 
     parser.add_argument("--ema_decay", type=float, default=0.999)
     parser.add_argument("--loss", type=str, default="l1", choices=["l1", "l2"])
+    parser.add_argument("--prediction_target", type=str, default="x0", choices=["x0", "residual"])
 
     parser.add_argument("--sample_every", type=int, default=5)
 
@@ -110,6 +112,7 @@ def run_train_epoch(
     total_epochs: int,
     grad_clip: float,
     max_batches: int | None,
+    prediction_target: str,
 ) -> dict[str, float]:
     model.train()
     meter = AverageMeter()
@@ -146,12 +149,13 @@ def run_train_epoch(
                 dtype=torch.long,
             )
             x_t = blur.degrade(x0, t)
+            target = blur.target_from_pair(x0, x_t, prediction_target=prediction_target)
 
             optimizer.zero_grad(set_to_none=True)
 
             with get_amp_context(device=device, enabled=scaler.is_enabled()):
-                pred_x0 = model(x_t, t)
-                loss = criterion(pred_x0, x0)
+                model_out = model(x_t, t)
+                loss = criterion(model_out, target)
 
             scaler.scale(loss).backward()
 
@@ -163,7 +167,6 @@ def run_train_epoch(
             scaler.update()
 
             ema.update(ema_model, model)
-
             meter.update(loss.item(), batch_size)
 
             lr = optimizer.param_groups[0]["lr"]
@@ -198,6 +201,7 @@ def run_val_epoch(
     epoch: int,
     total_epochs: int,
     max_batches: int | None,
+    prediction_target: str,
 ) -> dict[str, float]:
     model.eval()
     meter = AverageMeter()
@@ -234,11 +238,11 @@ def run_val_epoch(
                 dtype=torch.long,
             )
             x_t = blur.degrade(x0, t)
-            pred_x0 = model(x_t, t)
-            loss = criterion(pred_x0, x0)
+            target = blur.target_from_pair(x0, x_t, prediction_target=prediction_target)
+            model_out = model(x_t, t)
+            loss = criterion(model_out, target)
 
             meter.update(loss.item(), batch_size)
-
             progress.update(
                 task,
                 advance=1,
@@ -302,6 +306,7 @@ def main() -> None:
         out_channels=3,
         base_channels=args.base_channels,
         time_dim=args.time_dim,
+        dropout=args.dropout,
     ).to(device)
 
     ema_model = deepcopy(model).to(device)
@@ -345,7 +350,9 @@ def main() -> None:
                 f"device = {device}\n"
                 f"train size = {len(train_dataset)}\n"
                 f"val size = {len(val_dataset)}\n"
-                f"params = {count_parameters(model):,}"
+                f"params = {count_parameters(model):,}\n"
+                f"prediction_target = {args.prediction_target}\n"
+                f"schedule = {args.schedule}"
             ),
             title="Run Setup",
             border_style="cyan",
@@ -370,6 +377,7 @@ def main() -> None:
             total_epochs=args.epochs,
             grad_clip=args.grad_clip,
             max_batches=args.max_train_batches,
+            prediction_target=args.prediction_target,
         )
 
         val_metrics = run_val_epoch(
@@ -382,6 +390,7 @@ def main() -> None:
             epoch=epoch,
             total_epochs=args.epochs,
             max_batches=args.max_val_batches,
+            prediction_target=args.prediction_target,
         )
 
         is_best = val_metrics["loss"] < best_val_loss
@@ -398,6 +407,7 @@ def main() -> None:
                 fixed_x0=fixed_x0,
                 out_path=recon_path,
                 num_steps=args.num_steps,
+                prediction_target=args.prediction_target,
             )
             save_reverse_trajectory_grid(
                 model=ema_model,
@@ -405,6 +415,7 @@ def main() -> None:
                 fixed_x0=fixed_x0,
                 out_path=reverse_path,
                 num_steps=args.num_steps,
+                prediction_target=args.prediction_target,
             )
             console.print(f"[green]saved[/green] {recon_path}")
             console.print(f"[green]saved[/green] {reverse_path}")
@@ -434,6 +445,8 @@ def main() -> None:
             "val_time_sec": round(val_metrics["time_sec"], 2),
             "lr": optimizer.param_groups[0]["lr"],
             "device": str(device),
+            "prediction_target": args.prediction_target,
+            "schedule": args.schedule,
             "best_flag": int(is_best),
         }
         append_metrics_csv(row, history_csv)
@@ -448,6 +461,8 @@ def main() -> None:
         table.add_row("best_val_loss", f"{best_val_loss:.6f}")
         table.add_row("train_time_sec", f"{train_metrics['time_sec']:.2f}")
         table.add_row("val_time_sec", f"{val_metrics['time_sec']:.2f}")
+        table.add_row("prediction_target", args.prediction_target)
+        table.add_row("schedule", args.schedule)
         table.add_row("checkpoint", "best + last" if is_best else "last")
         console.print(table)
 
