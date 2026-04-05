@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+data/raw/
+outputs/checkpoints/
+outputs/samples/
+outputs/metrics/
+outputs/figures/
+outputs/report_figures/
