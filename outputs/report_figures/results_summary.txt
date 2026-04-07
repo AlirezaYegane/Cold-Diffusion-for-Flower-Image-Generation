@@ -1,12 +1,17 @@
 Main quantitative results
 -------------------------
 Dataset: Oxford-102 Flowers validation split
+Real images: 1020
+Fake images: 1020
 Primary metric: FID
+Device: CUDA
 
-Main run:
-- FID (100-step / main): 85.049
+Final sampler selection:
+- 15 steps: 124.374
+- 25 steps: 125.453
+- 50 steps: see fid_final_50.json
+- 100 steps: see fid_final_100.json
 
-Reverse-step ablation:
-- 25 steps: 83.005
-- 50 steps: 84.282
-- 100 steps: 85.049
+Key observation:
+- The best FID was achieved with 15 reverse steps.
+- Shorter reverse trajectories gave a better efficiency-quality trade-off in the current restoration-based setup.
